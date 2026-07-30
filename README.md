@@ -11,7 +11,7 @@ Pipeline Agent를 배포하는 OpenTofu/Terraform 구성입니다.
 | Kubernetes | k3s | `v1.36.2+k3s1` |
 | 블록 스토리지 | Longhorn | chart `1.12.0` |
 | 오브젝트/S3 | SeaweedFS | chart/app `4.40.0` / `4.40` |
-| Container Registry | Harbor | chart/app `1.19.1` / `v2.15.2` |
+| Container Registry | Harbor | chart/core `1.19.1` / `v2.15.2` (Redis `v2.15.1`) |
 | 키·Secret 관리 | OpenBao | chart/app `0.28.6` / `2.6.1` |
 | Azure Pipelines Agent | Microsoft Agent | `3.238.0` |
 | SonarQube Azure DevOps 확장 | 기존 외부 SonarQube 연동 | `8.2.3.2750` |
@@ -40,8 +40,12 @@ SonarQube 연결은 [SonarQube 연동](docs/SONARQUBE.md)을 봅니다.
 
 ## 사전 준비
 
-- Ubuntu 노드의 `/var/lib/longhorn`과 `/var/lib/rancher/k3s/storage`가 데이터
-  VHDX에 위치해야 합니다.
+- Ubuntu 관리 계정은 `asoladmin`이며 초기 비밀번호는 Hyper-V 콘솔에서 처음
+  로그인할 때 즉시 변경하도록 강제합니다. 평문 비밀번호는 저장소에 넣지 않습니다.
+- 하나의 VHDX를 사용하되 `/`는 ext4, `/mnt/data`는 XFS(`ftype=1`)인 별도 LVM
+  logical volume 또는 파티션으로 마운트합니다.
+- k3s 상태는 `/mnt/data/k3s`, local-path PVC는 `/mnt/data/local-path`,
+  Longhorn replica는 `/mnt/data/longhorn`에 저장됩니다.
 - DNS에서 Harbor/OpenBao FQDN이 Traefik 진입 IP를 가리켜야 합니다.
 - `registry`, `openbao`, `azure-pipelines` namespace에 사용할 TLS/PAT Secret을
   준비합니다.
@@ -98,6 +102,18 @@ docker push \
   registry.infra.example.com/platform/azure-pipelines-agent:2022.2-3.238.0
 ```
 
+Azure DevOps, SonarQube 또는 Harbor가 사내 CA 인증서를 사용하면 빌드할 때 CA를
+BuildKit secret으로 전달합니다. CA 파일은 공개 인증서이지만 이 방식은 빌드
+context와 Git에 파일이 섞이는 것을 막습니다.
+
+```bash
+docker build \
+  --platform linux/amd64 \
+  --secret id=asol_internal_ca,src=/secure/path/asol-root-ca.crt \
+  -t registry.infra.example.com/platform/azure-pipelines-agent:2022.2-3.238.0 \
+  images/azure-pipelines-agent
+```
+
 이미지를 Harbor에 push한 다음 `azure_pipelines_agent_enabled = true`로 바꾸고
 다시 apply합니다. Agent별 PVC가 `_work`, NuGet, Sonar, `uv` Python 다운로드를
 보존하므로 replica를 늘려도 RWO PVC를 공유하지 않습니다.
@@ -110,12 +126,17 @@ Agent 서비스 계정에는 Kubernetes API 권한을 부여하지 않습니다.
 OpenBao는 1노드부터 integrated Raft로 시작하므로 나중에 3 replica로 확장할 때
 스토리지 엔진을 바꿀 필요가 없습니다. 최초 배포 뒤 한 번만 초기화하고 unseal
 key와 root token은 Kubernetes/Terraform state 밖의 승인된 보관소에 저장합니다.
+초기화 전에도 Helm 설치가 완료될 수 있도록 health probe는 sealed/uninitialized
+상태를 bootstrap 가능한 상태로 취급합니다.
 
 ```bash
 kubectl -n openbao exec -it openbao-0 -- \
   bao operator init -key-shares=5 -key-threshold=3
 kubectl -n openbao exec -it openbao-0 -- bao operator unseal
 ```
+
+초기화와 unseal 뒤에는 `/openbao/audit` 경로를 사용하는 file audit device를
+활성화하고, root token 대신 운영 정책·인증 방식을 구성합니다.
 
 OpenBao auto-unseal은 별도 신뢰 루트(HSM/KMS)가 필요하므로 초기 구성에는
 포함하지 않았습니다. 자체 OpenBao로 자기 자신을 auto-unseal하는 순환 구성은
@@ -126,4 +147,6 @@ OpenBao auto-unseal은 별도 신뢰 루트(HSM/KMS)가 필요하므로 초기 �
 `deployment_profile = "ha"`로 변경하기 전에 k3s server VM을 총 3대로 만듭니다.
 Longhorn의 기존 볼륨 replica 수와 SeaweedFS의 기존 volume replication은 프로필
 변경만으로 자동 재작성되지 않으므로, 운영 절차에 따라 기존 데이터도 3 replica로
-조정하고 복구 테스트를 수행해야 합니다.
+조정하고 복구 테스트를 수행해야 합니다. OpenBao의 새 Pod는 `retry_join`으로
+Raft에 합류하지만 auto-unseal이 없으므로 각 Pod를 수동 unseal한 뒤
+`bao operator raft list-peers`로 3개 peer를 확인합니다.

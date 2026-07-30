@@ -1,0 +1,145 @@
+# Hyper-V 배치 기준
+
+## 초기 노드
+
+Ubuntu Server 24.04 LTS Gen2 VM 한 대에서 시작합니다.
+
+| 항목 | 초기 권장값 |
+|---|---:|
+| vCPU | 8 |
+| 고정 메모리 | 24~32 GiB |
+| VHDX | 동적 확장 600 GiB 이상, 운영 최대 크기는 용량 계획에 맞게 조정 |
+| NIC | External vSwitch, 고정 MAC + DHCP 예약 |
+| Secure Boot | Microsoft UEFI Certificate Authority |
+| Dynamic Memory | 사용하지 않음 |
+| Checkpoint | 사용하지 않음 |
+
+SonarQube 서버가 외부에 있으므로 이 산정에는 SonarQube 메모리와 PostgreSQL이
+포함되지 않습니다. Harbor의 실제 이미지 보존 정책과 SeaweedFS 복제본 수를
+고려해 VHDX의 데이터 영역은 여유 있게 산정해야 합니다.
+
+## 디스크와 마운트 지점
+
+VHDX는 한 개를 사용해도 됩니다. Ubuntu 설치 화면의 Custom storage layout에서
+같은 VHDX 안에 서로 다른 LVM logical volume 또는 파티션을 만들고 다음처럼
+마운트합니다.
+
+| 마운트 지점 | 권장 크기 | 용도 |
+|---|---:|---|
+| `/` | 100 GiB, ext4 | Ubuntu OS, 패키지, 로그 |
+| `/mnt/data` | 나머지 공간, XFS | k3s와 플랫폼 영속 데이터 |
+
+LVM을 권장하는 이유는 나중에 VHDX를 확장한 뒤 logical volume 크기를 조정하기
+쉽기 때문입니다. `/mnt/data`는 `/`와 같은 물리 VHDX에 있어도 되지만 별도
+filesystem으로 마운트되어야 하며 `/etc/fstab`에 등록되어 부팅 때 자동
+마운트되어야 합니다. XFS는 `ftype=1`이어야 합니다. Ubuntu 24.04의 최신
+`mkfs.xfs` 기본값이지만 준비 스크립트에서도 파일시스템 종류, `ftype=1`,
+read-write 마운트를 모두 검사합니다. 이 구성은 Kubernetes NodeSwap을 별도로
+활성화하지 않으므로 swap partition/file은 만들지 않거나 설치 전에 비활성화하고
+`/etc/fstab`에서도 제거합니다.
+
+`/etc/fstab`의 데이터 항목은 설치기가 생성한 UUID를 사용합니다. 예시는 다음과
+같으며 실제 UUID로 바꿔야 합니다.
+
+```fstab
+UUID=<data-lv-uuid> /mnt/data xfs defaults,noatime 0 0
+```
+
+플랫폼 경로는 다음으로 고정합니다.
+
+- `/mnt/data/k3s`: k3s 상태, embedded etcd, containerd, kubelet 데이터
+- `/mnt/data/local-path`: k3s local-path PVC
+- `/mnt/data/longhorn`: Longhorn replica 데이터
+
+여기서 `/mnt/data`의 호스트 filesystem은 XFS이고, Longhorn이 Pod에 제공하는
+기본 volume 내부 filesystem은 Terraform의 StorageClass 설정대로 ext4입니다.
+두 계층의 filesystem이 다른 것은 정상입니다.
+
+기본 `local-path` provisioner는 PVC 요청 크기를 filesystem quota로 강제하지
+않습니다. 따라서 SeaweedFS와 Longhorn이 같은 `/mnt/data` 여유 공간을 사용한다는
+점을 감안해 디스크 사용률 경보와 Harbor 보존 정책을 함께 운영해야 합니다.
+
+디스크 선택과 파티션·포맷은 되돌리기 어려운 작업이므로 이 저장소의 스크립트가
+자동으로 수행하지 않습니다. 새 노드를 추가할 때도 같은 마운트 구조를 먼저
+준비합니다.
+
+## 사내 CA와 Harbor
+
+Harbor가 사내 CA 인증서를 사용하면 모든 k3s 서버 노드가 이미지를 pull할 수
+있도록 CA 인증서를 노드에 설치하고, k3s 설치 전에
+`/etc/rancher/k3s/registries.yaml`을 준비합니다.
+
+```yaml
+configs:
+  "registry.infra.example.com":
+    tls:
+      ca_file: /usr/local/share/ca-certificates/asol-root-ca.crt
+```
+
+인증서는 `update-ca-certificates`로 Ubuntu trust store에도 반영합니다. Harbor
+인증 정보는 이 파일에 평문으로 넣지 않고 Kubernetes imagePullSecret을 사용합니다.
+레지스트리 설정을 사후 변경하면 해당 노드의 k3s를 재시작해야 합니다.
+
+## k3s 설치
+
+Ubuntu 관리 계정은 `asoladmin`으로 통일합니다. 요청한 초기 비밀번호를 Git이나
+Terraform 변수에 넣지 말고 Hyper-V 콘솔에서 최초 로그인한 직후 변경합니다.
+노드 준비 스크립트는 비밀번호를 root 전용 파일로 받아 계정을 생성하고
+`chage`로 최초 로그인 시 변경을 강제합니다. 또한 `k3s-admin` group에 계정을
+추가해 root 소유 kubeconfig를 group read 권한으로 사용할 수 있게 합니다.
+
+```bash
+sudo install -m 0600 /dev/stdin /root/asoladmin-initial-password
+# 표준 입력으로 합의한 초기 비밀번호를 전달하고 Ctrl-D
+
+./scripts/prepare-ubuntu-node.sh
+sudo shred -u /root/asoladmin-initial-password
+```
+
+SSH 공개키는 Ubuntu 설치/cloud-init 단계에서 `asoladmin`에 등록합니다. 비밀번호
+SSH 로그인은 활성화하지 않으며 초기 비밀번호는 Hyper-V 콘솔 복구용으로만
+사용합니다. 기존 로그인 세션에는 새 group이 즉시 반영되지 않으므로 준비
+스크립트 실행 후 로그아웃했다가 다시 로그인합니다.
+
+각 노드에서 위 준비를 마친 후 k3s를 설치합니다. 초기 서버는
+처음부터 embedded etcd로 시작해야 나중에 control-plane 노드를 자연스럽게
+추가할 수 있습니다. 설치 스크립트는 Kubernetes Secret의 etcd 저장 시 암호화,
+압축된 etcd snapshot과 14개 보존 정책도 모든 server 노드에 동일하게 적용합니다.
+
+```bash
+sudo install -m 0600 /dev/stdin /root/k3s-cluster-token
+# 위 명령의 표준 입력으로 충분히 긴 무작위 토큰을 전달
+
+K3S_TLS_SAN=k3s.infra.example.com \
+  ./scripts/install-k3s-initial-server.sh
+```
+
+추가 서버 노드는 동일한 토큰 파일과 `/mnt/data` 마운트를 준비한 뒤 실행합니다.
+
+```bash
+K3S_URL=https://10.0.0.10:6443 \
+  ./scripts/install-k3s-server-node.sh
+```
+
+etcd 쿼럼을 위해 서버 노드는 1대 다음에 바로 3대로 확장하며 2대 상태를
+장기간 운용하지 않습니다. VM 세 대는 가능하면 서로 다른 Hyper-V 호스트에
+분산해야 호스트 장애까지 견딜 수 있습니다. Hyper-V 호스트가 한 대뿐이면
+3노드는 유지보수 편의와 Pod 분산에는 도움이 되지만 호스트 장애는 막지 못합니다.
+
+기본 etcd snapshot도 `/mnt/data/k3s`와 같은 VHDX에 있으므로 디스크 장애에 대한
+백업은 아닙니다. 운영 전에는 이 클러스터와 장애 영역을 공유하지 않는 외부
+S3/NFS 백업 대상을 정하고 복구 훈련을 별도로 수행해야 합니다. 같은 클러스터의
+SeaweedFS를 etcd의 유일한 백업 대상으로 사용하면 동시 장애 때 복구할 수 없습니다.
+
+## Terraform 경계
+
+플랫폼 리소스는 이 디렉터리의 OpenTofu/Terraform state로 관리합니다. Hyper-V
+VM은 별도 state로 분리하는 것이 안전합니다. 현재 공개 Hyper-V provider의 최신
+버전은 `taliesins/hyperv 1.2.1`이며 WinRM을 사용하지만 릴리스 주기가 느리고,
+Ubuntu 이미지 일반화·고정 IP·초기 secret 전달까지 provider 하나로 신뢰성 있게
+처리하기 어렵습니다.
+
+VM 템플릿, External vSwitch 이름, IP 대역, Hyper-V 호스트 수가 확정되면 별도
+`hyperv-nodes` root module에서 해당 provider를 고정해 관리합니다. 애플리케이션
+state와 합치지 않습니다. Hyper-V는 기존 회사 플랫폼이므로 오픈소스 범위는
+Ubuntu 게스트 내부의 k3s와 플랫폼 구성요소에 적용됩니다.

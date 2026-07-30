@@ -1,0 +1,45 @@
+parameters:
+  - name: sonarQubeServiceConnection
+    type: string
+  - name: sonarProjectKey
+    type: string
+  - name: solution
+    type: string
+    default: "**/*.sln"
+
+steps:
+  - checkout: self
+    fetchDepth: 0
+
+  - task: SonarQubePrepare@8
+    displayName: Prepare SonarQube analysis
+    inputs:
+      SonarQube: ${{ parameters.sonarQubeServiceConnection }}
+      scannerMode: dotnet
+      projectKey: ${{ parameters.sonarProjectKey }}
+      dotnetScannerVersion: 11.2.1.137242
+      extraProperties: |
+        sonar.cs.opencover.reportsPaths=$(Agent.TempDirectory)/**/coverage.opencover.xml
+
+  - script: dotnet restore "${{ parameters.solution }}"
+    displayName: Restore
+
+  - script: dotnet build "${{ parameters.solution }}" --no-restore --configuration Release
+    displayName: Build
+
+  - script: >-
+      dotnet test "${{ parameters.solution }}"
+      --no-build
+      --configuration Release
+      --collect:"XPlat Code Coverage"
+      --
+      DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover
+    displayName: Test
+
+  - task: SonarQubeAnalyze@8
+    displayName: Analyze
+
+  - task: SonarQubePublish@8
+    displayName: Publish quality gate
+    inputs:
+      pollingTimeoutSec: "300"

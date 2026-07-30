@@ -1,0 +1,23 @@
+deployment_profile = "single"
+
+kubeconfig_path = "~/.kube/config"
+kube_context     = null
+
+harbor_hostname        = "registry.infra.example.com"
+harbor_tls_secret_name = "harbor-tls"
+
+openbao_hostname        = "bao.infra.example.com"
+openbao_tls_secret_name = "openbao-tls"
+
+object_data_storage_class = "local-path"
+object_data_volume_size   = "300Gi"
+
+azure_pipelines_agent_enabled  = false
+azure_pipelines_agent_image    = "registry.infra.example.com/platform/azure-pipelines-agent:2022.2-3.238.0"
+azure_pipelines_url            = "https://azure-devops.example.com/tfs/DefaultCollection"
+azure_pipelines_pool           = "linux-k3s"
+azure_pipelines_agent_replicas = 1
+
+# 비밀번호/PAT/키는 이 파일에 적지 않습니다.
+# Harbor/SeaweedFS 값은 TF_VAR_* 환경변수로 전달하고,
+# Azure Pipelines PAT와 TLS 인증서는 사전 생성한 Kubernetes Secret을 참조합니다.

@@ -1,0 +1,38 @@
+parameters:
+  - name: sonarQubeServiceConnection
+    type: string
+  - name: sonarProjectKey
+    type: string
+  - name: cmakePreset
+    type: string
+    default: ci
+
+steps:
+  - checkout: self
+    fetchDepth: 0
+
+  - task: SonarQubePrepare@8
+    displayName: Prepare SonarQube CFamily analysis
+    inputs:
+      SonarQube: ${{ parameters.sonarQubeServiceConnection }}
+      scannerMode: cli
+      configMode: manual
+      cliProjectKey: ${{ parameters.sonarProjectKey }}
+      cliSources: "."
+      cliScannerVersion: 8.1.0.6389
+      extraProperties: |
+        sonar.cfamily.compile-commands=$(Build.SourcesDirectory)/build/compile_commands.json
+
+  - script: |
+      cmake --preset "${{ parameters.cmakePreset }}" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+      cmake --build --preset "${{ parameters.cmakePreset }}"
+      ctest --preset "${{ parameters.cmakePreset }}" --output-on-failure
+    displayName: Configure, build, and test C++
+
+  - task: SonarQubeAnalyze@8
+    displayName: Analyze
+
+  - task: SonarQubePublish@8
+    displayName: Publish quality gate
+    inputs:
+      pollingTimeoutSec: "300"
