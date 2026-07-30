@@ -13,17 +13,23 @@ resource "helm_release" "openbao" {
   values = [
     yamlencode({
       global = {
-        tlsDisable = true
+        tlsDisable = false
       }
 
       injector = {
-        enabled  = true
-        replicas = local.is_ha ? 2 : 1
+        enabled         = true
+        replicas        = local.is_ha ? 2 : 1
+        externalBaoAddr = "https://openbao-internal.openbao.svc:8200"
         agentImage = {
           tag = local.versions.openbao
         }
         webhook = {
-          failurePolicy = "Ignore"
+          failurePolicy = "Fail"
+          namespaceSelector = {
+            matchLabels = {
+              "openbao.asol.io/injection" = "enabled"
+            }
+          }
         }
       }
 
@@ -42,29 +48,31 @@ resource "helm_release" "openbao" {
           }
         }
         readinessProbe = {
-          path = "/v1/sys/health?standbyok=true&sealedcode=204&uninitcode=204"
+          path = "/v1/sys/health?standbyok=true&uninitcode=204"
+        }
+        extraEnvironmentVars = {
+          BAO_CACERT          = "/openbao/tls/ca.crt"
+          BAO_TLS_SERVER_NAME = "openbao-internal"
         }
         ingress = {
-          enabled          = true
-          ingressClassName = var.ingress_class_name
-          activeService    = true
-          annotations = {
-            "traefik.ingress.kubernetes.io/router.entrypoints" = "websecure"
-            "traefik.ingress.kubernetes.io/router.tls"         = "true"
-          }
-          hosts = [
-            {
-              host  = var.openbao_hostname
-              paths = ["/"]
-            }
-          ]
-          tls = [
-            {
-              secretName = var.openbao_tls_secret_name
-              hosts      = [var.openbao_hostname]
-            }
-          ]
+          enabled = false
         }
+        volumes = [
+          {
+            name = "tls"
+            secret = {
+              secretName  = var.openbao_tls_secret_name
+              defaultMode = 288
+            }
+          }
+        ]
+        volumeMounts = [
+          {
+            name      = "tls"
+            mountPath = "/openbao/tls"
+            readOnly  = true
+          }
+        ]
         dataStorage = {
           enabled      = true
           size         = "10Gi"
@@ -92,10 +100,11 @@ resource "helm_release" "openbao" {
             setNodeId = true
             config    = <<-EOT
               ui = true
-              disable_mlock = true
 
               listener "tcp" {
-                tls_disable = 1
+                tls_disable = 0
+                tls_cert_file = "/openbao/tls/tls.crt"
+                tls_key_file = "/openbao/tls/tls.key"
                 address = "[::]:8200"
                 cluster_address = "[::]:8201"
               }
@@ -104,7 +113,11 @@ resource "helm_release" "openbao" {
                 path = "/openbao/data"
 
                 retry_join {
-                  leader_api_addr = "http://openbao-0.openbao-internal:8200"
+                  leader_api_addr = "https://openbao-0.openbao-internal:8200"
+                  leader_tls_servername = "openbao-internal"
+                  leader_client_cert_file = "/openbao/tls/tls.crt"
+                  leader_client_key_file = "/openbao/tls/tls.key"
+                  leader_ca_cert_file = "/openbao/tls/ca.crt"
                 }
               }
 
@@ -125,4 +138,35 @@ resource "helm_release" "openbao" {
   ]
 
   depends_on = [helm_release.longhorn]
+}
+
+resource "kubernetes_manifest" "openbao_ingress_route_tcp" {
+  manifest = {
+    apiVersion = "traefik.io/v1alpha1"
+    kind       = "IngressRouteTCP"
+    metadata = {
+      name      = "openbao"
+      namespace = kubernetes_namespace_v1.openbao.metadata[0].name
+      labels    = local.common_labels
+    }
+    spec = {
+      entryPoints = ["websecure"]
+      routes = [
+        {
+          match = "HostSNI(`${var.openbao_hostname}`)"
+          services = [
+            {
+              name = "openbao-active"
+              port = 8200
+            }
+          ]
+        }
+      ]
+      tls = {
+        passthrough = true
+      }
+    }
+  }
+
+  depends_on = [helm_release.openbao]
 }

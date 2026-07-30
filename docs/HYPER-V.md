@@ -8,7 +8,7 @@ Ubuntu Server 24.04 LTS Gen2 VM 한 대에서 시작합니다.
 |---|---:|
 | vCPU | 8 |
 | 고정 메모리 | 24~32 GiB |
-| VHDX | 동적 확장 600 GiB 이상, 운영 최대 크기는 용량 계획에 맞게 조정 |
+| VHDX | 동적 확장 1 TiB 이상, 운영 최대 크기는 용량 계획에 맞게 조정 |
 | NIC | External vSwitch, 고정 MAC + DHCP 예약 |
 | Secure Boot | Microsoft UEFI Certificate Authority |
 | Dynamic Memory | 사용하지 않음 |
@@ -42,7 +42,7 @@ read-write 마운트를 모두 검사합니다. 이 구성은 Kubernetes NodeSwa
 같으며 실제 UUID로 바꿔야 합니다.
 
 ```fstab
-UUID=<data-lv-uuid> /mnt/data xfs defaults,noatime 0 0
+UUID=<data-lv-uuid> /mnt/data xfs defaults,noatime,prjquota 0 0
 ```
 
 플랫폼 경로는 다음으로 고정합니다.
@@ -56,8 +56,11 @@ UUID=<data-lv-uuid> /mnt/data xfs defaults,noatime 0 0
 두 계층의 filesystem이 다른 것은 정상입니다.
 
 기본 `local-path` provisioner는 PVC 요청 크기를 filesystem quota로 강제하지
-않습니다. 따라서 SeaweedFS와 Longhorn이 같은 `/mnt/data` 여유 공간을 사용한다는
-점을 감안해 디스크 사용률 경보와 Harbor 보존 정책을 함께 운영해야 합니다.
+않습니다. 준비 스크립트는 XFS project quota로 k3s 15%, local-path 50%,
+Longhorn 30%의 hard limit을 적용하고 나머지 5%를 안전 여유로 남깁니다. 비율은
+각각 `K3S_QUOTA_PERCENT`, `LOCAL_PATH_QUOTA_PERCENT`,
+`LONGHORN_QUOTA_PERCENT` 환경변수로 조정할 수 있으며 합계는 95% 이하여야 합니다.
+이 제한과 별개로 디스크 사용률 경보와 Harbor 보존 정책을 함께 운영해야 합니다.
 
 디스크 선택과 파티션·포맷은 되돌리기 어려운 작업이므로 이 저장소의 스크립트가
 자동으로 수행하지 않습니다. 새 노드를 추가할 때도 같은 마운트 구조를 먼저

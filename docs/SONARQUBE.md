@@ -20,7 +20,9 @@ Secret에는 에이전트 등록용 Azure DevOps PAT만 저장합니다.
 ## 언어별 예제
 
 - `pipelines/examples/sonarqube-dotnet.yml`: SDK는 저장소의 `global.json`으로
-  선택합니다. 이미지에는 현재 LTS인 .NET 10과 호환용 .NET 8이 포함됩니다.
+  선택합니다. `solution` parameter에는 wildcard가 아닌 실제 `.sln` 또는
+  `.slnx` 경로를 전달합니다. 이미지에는 현재 LTS인 .NET 10과 호환용 .NET 8이
+  포함됩니다.
 - `pipelines/examples/sonarqube-python.yml`: `.python-version` 또는
   `pyproject.toml`의 `requires-python`에 따라 `uv`가 Python을 선택하고 Agent별
   PVC에 설치·캐시합니다. 애플리케이션 Python 버전을 이미지에 고정하지 않습니다.

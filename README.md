@@ -57,10 +57,24 @@ SonarQube 연결은 [SonarQube 연동](docs/SONARQUBE.md)을 봅니다.
 cp terraform.tfvars.example terraform.tfvars
 ```
 
-OpenTofu가 namespace를 먼저 만들게 한 후 인증서와 PAT를 생성합니다.
+필수 bootstrap 값은 대상 지정 apply에서도 변수 검증에 필요합니다. 아래 예시
+문자열을 그대로 쓰지 말고 현재 shell에만 실제 무작위 값을 설정합니다.
 
 ```bash
+export TF_VAR_harbor_admin_password='replace-with-at-least-16-characters'
+export TF_VAR_harbor_secret_key='0123456789ABCDEF'
+export TF_VAR_seaweedfs_s3_access_key='REPLACEACCESSKEY'
+export TF_VAR_seaweedfs_s3_secret_key='replace-with-at-least-32-characters'
+
 tofu init
+```
+
+OpenTofu가 namespace를 먼저 만들게 한 후 인증서와 PAT를 생성합니다.
+OpenBao 인증서는 외부 FQDN, `openbao-internal`,
+`openbao-internal.openbao.svc`, `openbao-internal.openbao.svc.cluster.local`을
+SAN으로 포함하고, `ca.crt`는 인증서를 발급한 CA chain이어야 합니다.
+
+```bash
 tofu apply \
   -target=kubernetes_namespace_v1.longhorn \
   -target=kubernetes_namespace_v1.object_storage \
@@ -70,8 +84,10 @@ tofu apply \
 
 kubectl -n registry create secret tls harbor-tls \
   --cert=harbor.crt --key=harbor.key
-kubectl -n openbao create secret tls openbao-tls \
-  --cert=openbao.crt --key=openbao.key
+kubectl -n openbao create secret generic openbao-tls \
+  --from-file=tls.crt=openbao.crt \
+  --from-file=tls.key=openbao.key \
+  --from-file=ca.crt=openbao-ca.crt
 kubectl -n azure-pipelines create secret generic azure-pipelines-agent-pat \
   --from-file=pat=/secure/path/azure-agent.pat
 ```
@@ -79,11 +95,6 @@ kubectl -n azure-pipelines create secret generic azure-pipelines-agent-pat \
 초기에는 `azure_pipelines_agent_enabled = false`로 플랫폼을 먼저 올립니다.
 
 ```bash
-export TF_VAR_harbor_admin_password='...'
-export TF_VAR_harbor_secret_key='0123456789ABCDEF'
-export TF_VAR_seaweedfs_s3_access_key='...'
-export TF_VAR_seaweedfs_s3_secret_key='...'
-
 tofu plan -out=platform.tfplan
 tofu apply platform.tfplan
 ```
@@ -120,14 +131,17 @@ docker build \
 
 Agent 서비스 계정에는 Kubernetes API 권한을 부여하지 않습니다. 배포 Pipeline이
 필요하면 별도의 최소 권한 Service Connection/kubeconfig를 사용합니다.
+등록 PAT도 Agent Pools의 필요한 최소 scope만 부여하고 주기적으로 회전합니다.
+이 self-hosted agent는 신뢰하는 사내 프로젝트와 검토된 Pipeline에서만 사용해야
+합니다. Pipeline script는 실행 중인 job의 secret과 작업공간에 접근할 수 있습니다.
 
 ## OpenBao 초기화
 
 OpenBao는 1노드부터 integrated Raft로 시작하므로 나중에 3 replica로 확장할 때
 스토리지 엔진을 바꿀 필요가 없습니다. 최초 배포 뒤 한 번만 초기화하고 unseal
 key와 root token은 Kubernetes/Terraform state 밖의 승인된 보관소에 저장합니다.
-초기화 전에도 Helm 설치가 완료될 수 있도록 health probe는 sealed/uninitialized
-상태를 bootstrap 가능한 상태로 취급합니다.
+초기화 전에도 Helm 설치가 완료될 수 있도록 health probe는 uninitialized 상태만
+bootstrap 가능한 상태로 취급합니다. 초기화 후 sealed Pod는 Ready가 되지 않습니다.
 
 ```bash
 kubectl -n openbao exec -it openbao-0 -- \
@@ -142,6 +156,19 @@ OpenBao auto-unseal은 별도 신뢰 루트(HSM/KMS)가 필요하므로 초기 �
 포함하지 않았습니다. 자체 OpenBao로 자기 자신을 auto-unseal하는 순환 구성은
 사용하지 않습니다.
 
+OpenBao Agent Injector는 fail-closed이며 명시적으로 허용한 namespace에만
+작동합니다. Secret 주입을 사용할 애플리케이션 namespace에 다음 label을
+Terraform 또는 해당 namespace 관리 도구로 추가합니다.
+
+```bash
+kubectl label namespace <application-namespace> \
+  openbao.asol.io/injection=enabled
+```
+
+주입되는 Agent가 OpenBao 서버 인증서를 검증하도록 같은 CA를 애플리케이션
+namespace의 Secret으로 배포하고 Pod annotation의 CA 경로를 지정해야 합니다.
+CA 배포와 annotation은 애플리케이션별 배포 저장소에서 관리합니다.
+
 ## 확장 시 주의
 
 `deployment_profile = "ha"`로 변경하기 전에 k3s server VM을 총 3대로 만듭니다.
@@ -150,3 +177,21 @@ Longhorn의 기존 볼륨 replica 수와 SeaweedFS의 기존 volume replication�
 조정하고 복구 테스트를 수행해야 합니다. OpenBao의 새 Pod는 `retry_join`으로
 Raft에 합류하지만 auto-unseal이 없으므로 각 Pod를 수동 unseal한 뒤
 `bao operator raft list-peers`로 3개 peer를 확인합니다.
+
+## 운영 전 필수 결정
+
+- 현재 root module은 backend를 선언하지 않습니다. Terraform/OpenTofu state는
+  이 클러스터와 장애 영역을 공유하지 않는 암호화된 remote backend와 locking을
+  구성한 뒤 운영에 사용합니다. 같은 SeaweedFS를 유일한 state/backup 저장소로
+  두면 클러스터 장애 시 복구가 막힙니다.
+- `ha` 프로필도 자동으로 모든 계층을 완전한 HA로 만들지는 않습니다. 현재
+  SeaweedFS filer와 Harbor 내부 DB는 1 replica이므로 노드 확장 전에 각 제품의
+  외부 DB/metadata HA 설계와 실제 복구 시험이 필요합니다.
+- Agent에는 Docker daemon socket이나 privileged builder를 넣지 않았습니다.
+  OCI 이미지를 Pipeline에서 빌드해야 하면 별도 namespace에 rootless BuildKit
+  서비스를 배포하고 최소 권한으로 연결합니다.
+- 외부 etcd/OpenBao/Harbor 백업 대상, 보존 기간, RPO/RTO와 복구 runbook은
+  회사의 백업 시스템이 정해진 뒤 별도로 구현하고 정기적으로 시험합니다.
+- 인터넷에서 받는 Agent 도구는 고정 버전과 일부 checksum 검증을 적용했지만,
+  운영망에서는 검증한 바이너리와 이미지를 Harbor에 mirror하고 서명·승인 절차를
+  통과한 artifact만 사용하도록 공급망 정책을 추가합니다.

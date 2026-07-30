@@ -24,6 +24,11 @@ if [[ -n "$(swapon --show --noheadings)" ]]; then
   exit 1
 fi
 
+if findmnt --fstab --types swap --noheadings | grep -q .; then
+  echo "Swap entries must be removed or commented out in /etc/fstab before installing k3s" >&2
+  exit 1
+fi
+
 install_script="$(mktemp)"
 trap 'rm -f "${install_script}"' EXIT
 k3s_version_url="${K3S_VERSION//+/%2B}"

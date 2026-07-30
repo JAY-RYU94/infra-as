@@ -5,7 +5,6 @@ parameters:
     type: string
   - name: solution
     type: string
-    default: "**/*.sln"
 
 steps:
   - checkout: self
@@ -19,7 +18,7 @@ steps:
       projectKey: ${{ parameters.sonarProjectKey }}
       dotnetScannerVersion: 11.2.1.137242
       extraProperties: |
-        sonar.cs.opencover.reportsPaths=$(Agent.TempDirectory)/**/coverage.opencover.xml
+        sonar.cs.opencover.reportsPaths=$(Build.SourcesDirectory)/**/TestResults/**/coverage.opencover.xml
 
   - script: dotnet restore "${{ parameters.solution }}"
     displayName: Restore
@@ -31,6 +30,7 @@ steps:
       dotnet test "${{ parameters.solution }}"
       --no-build
       --configuration Release
+      --results-directory "$(Build.SourcesDirectory)/TestResults"
       --collect:"XPlat Code Coverage"
       --
       DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover

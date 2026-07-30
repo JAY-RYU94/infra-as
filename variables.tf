@@ -43,7 +43,7 @@ variable "openbao_hostname" {
 }
 
 variable "openbao_tls_secret_name" {
-  description = "openbao 네임스페이스에 미리 생성한 OpenBao TLS Secret 이름"
+  description = "OpenBao server TLS Secret. tls.crt/tls.key/ca.crt가 필요하며 SAN은 외부 FQDN과 openbao-internal 서비스 DNS 이름들을 포함합니다."
   type        = string
 }
 

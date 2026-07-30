@@ -3,6 +3,9 @@ set -euo pipefail
 
 ASOLADMIN_PASSWORD_FILE="${ASOLADMIN_PASSWORD_FILE:-/root/asoladmin-initial-password}"
 DATA_MOUNT="/mnt/data"
+K3S_QUOTA_PERCENT="${K3S_QUOTA_PERCENT:-15}"
+LOCAL_PATH_QUOTA_PERCENT="${LOCAL_PATH_QUOTA_PERCENT:-50}"
+LONGHORN_QUOTA_PERCENT="${LONGHORN_QUOTA_PERCENT:-30}"
 
 if ! sudo test -r "${ASOLADMIN_PASSWORD_FILE}"; then
   echo "Initial asoladmin password file is not readable: ${ASOLADMIN_PASSWORD_FILE}" >&2
@@ -40,8 +43,41 @@ if [[ ",${data_options}," != *,rw,* ]]; then
   exit 1
 fi
 
+if [[ ",${data_options}," != *,prjquota,* && ",${data_options}," != *,pquota,* ]]; then
+  echo "${DATA_MOUNT} must be mounted with the XFS prjquota option" >&2
+  exit 1
+fi
+
+for quota_percent in \
+  "${K3S_QUOTA_PERCENT}" \
+  "${LOCAL_PATH_QUOTA_PERCENT}" \
+  "${LONGHORN_QUOTA_PERCENT}"; do
+  if [[ ! "${quota_percent}" =~ ^([1-9]|[1-9][0-9])$ ]]; then
+    echo "XFS quota percentages must be integers from 1 to 99" >&2
+    exit 1
+  fi
+done
+
+k3s_quota_percent_decimal=$((10#${K3S_QUOTA_PERCENT}))
+local_path_quota_percent_decimal=$((10#${LOCAL_PATH_QUOTA_PERCENT}))
+longhorn_quota_percent_decimal=$((10#${LONGHORN_QUOTA_PERCENT}))
+quota_total_percent=$((
+  k3s_quota_percent_decimal +
+    local_path_quota_percent_decimal +
+    longhorn_quota_percent_decimal
+))
+if ((quota_total_percent > 95)); then
+  echo "XFS project quota percentages must total 95 or less" >&2
+  exit 1
+fi
+
 if [[ -n "$(swapon --show --noheadings)" ]]; then
   echo "Swap must be disabled in the running system and /etc/fstab before installing k3s" >&2
+  exit 1
+fi
+
+if findmnt --fstab --types swap --noheadings | grep -q .; then
+  echo "Swap entries must be removed or commented out in /etc/fstab before installing k3s" >&2
   exit 1
 fi
 
@@ -64,7 +100,6 @@ if [[ -z "${initial_password}" ]]; then
 fi
 
 printf 'asoladmin:%s\n' "${initial_password}" | sudo chpasswd
-sudo chage --lastday 0 asoladmin
 unset initial_password
 
 sudo apt-get update
@@ -88,6 +123,30 @@ sudo install -d -m 0755 \
   "${DATA_MOUNT}/local-path" \
   "${DATA_MOUNT}/longhorn"
 
+data_size_kib="$(
+  df --block-size=1K --output=size "${DATA_MOUNT}" |
+    tail -n 1 |
+    tr -d '[:space:]'
+)"
+k3s_quota_kib=$((data_size_kib * k3s_quota_percent_decimal / 100))
+local_path_quota_kib=$((data_size_kib * local_path_quota_percent_decimal / 100))
+longhorn_quota_kib=$((data_size_kib * longhorn_quota_percent_decimal / 100))
+
+sudo xfs_quota -x \
+  -c "project -s -p ${DATA_MOUNT}/k3s 11001" \
+  -c "limit -p bhard=${k3s_quota_kib}k 11001" \
+  "${DATA_MOUNT}"
+sudo xfs_quota -x \
+  -c "project -s -p ${DATA_MOUNT}/local-path 11002" \
+  -c "limit -p bhard=${local_path_quota_kib}k 11002" \
+  "${DATA_MOUNT}"
+sudo xfs_quota -x \
+  -c "project -s -p ${DATA_MOUNT}/longhorn 11003" \
+  -c "limit -p bhard=${longhorn_quota_kib}k 11003" \
+  "${DATA_MOUNT}"
+
+sudo chage --lastday 0 asoladmin
+
 cat <<'MESSAGE'
 Node prerequisites are installed.
 
@@ -102,3 +161,10 @@ The data mount was verified. Platform data will use:
 The / and /mnt/data filesystems may share one Hyper-V VHDX, but they must be
 separate partitions or LVM logical volumes. See docs/HYPER-V.md.
 MESSAGE
+
+printf \
+  'XFS project quota hard limits: k3s=%s%%, local-path=%s%%, Longhorn=%s%%; unallocated headroom=%s%%.\n' \
+  "${K3S_QUOTA_PERCENT}" \
+  "${LOCAL_PATH_QUOTA_PERCENT}" \
+  "${LONGHORN_QUOTA_PERCENT}" \
+  "$((100 - quota_total_percent))"
