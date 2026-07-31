@@ -3,7 +3,7 @@ terraform {
 
   required_providers {
     hyperv = {
-      source  = "windsorcli/hyperv"
+      source  = "registry.terraform.io/windsorcli/hyperv"
       version = "0.3.1"
     }
   }

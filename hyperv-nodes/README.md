@@ -5,7 +5,8 @@ OpenTofu/Terraform state로 관리합니다. Terraform Registry에서 설치 가
 최신판인 `windsorcli/hyperv 0.3.1`을 정확히 고정했으며, WSL에서 WinRM으로
 기존 Hyper-V 호스트를 제어합니다. 2026-07-31 현재 GitHub에는 `v0.3.3` 태그가
 있지만 Registry version 목록에 배포되지 않아 재현 가능한 `init` 대상에서
-제외했습니다.
+제외했습니다. 이 provider는 OpenTofu Registry에 없으므로 `required_providers`의
+source를 `registry.terraform.io/windsorcli/hyperv`로 완전히 명시합니다.
 
 Ubuntu Server `24.04.4 LTS` 무인 설치 ISO는 다음 구성을 자동으로 만듭니다.
 
