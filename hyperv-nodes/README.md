@@ -68,19 +68,43 @@ IP SAN에도 그 주소가 있어야 합니다.
 
 ## 2. WSL 도구와 비밀 파일 준비
 
-Ubuntu WSL에서 설치합니다.
+Ubuntu WSL에서 저장소를 받은 뒤 자동화 스크립트를 실행하는 방법을 권장합니다.
+설치 스크립트는 공식 OpenTofu APT repository를 등록하고 `1.12.5`를 정확히
+pin한 뒤 ISO 생성에 필요한 패키지를 함께 설치합니다.
+
+```bash
+cd hyperv-nodes
+./scripts/install-wsl-prerequisites.sh
+./scripts/configure-deployment.sh
+source ./hyperv.env
+```
+
+설정 스크립트는 WinRM, VM network, External vSwitch와 VM resource를 대화식으로
+받아 mode `0600`인 `hyperv.env`와 `terraform.tfvars`를 생성합니다. 초기
+`asoladmin` 비밀번호는 숨김 prompt로 두 번 받고 WSL home의 mode `0600` 파일에만
+저장합니다. k3s token은 자동 생성하며 SSH key가 없으면 `ssh-keygen`을 실행합니다.
+마지막에는 새 VM disk 초기화 확인을 위해 VM 이름을 정확히 다시 입력해야 합니다.
+기존 설정 파일은 자동으로 덮어쓰지 않으며 의도적으로 재생성할 때만 검토 후
+`--force`를 사용합니다.
+
+CI나 별도의 안전한 자동 입력 환경에서는 필요한 값을 환경변수로 전달한 뒤
+`--non-interactive`를 사용할 수 있습니다. 이 모드에서는 초기 비밀번호 파일과
+SSH 공개키가 이미 존재해야 하며 `INSTALL_DISK_WIPE_CONFIRMATION`도 VM 이름과
+정확히 같아야 합니다. 일반 운영자 배포는 대화식 실행을 사용합니다.
+
+수동 설치가 필요하면 아래 패키지를 설치하고
+[OpenTofu 공식 Debian 설치 절차](https://opentofu.org/docs/intro/install/deb/)로
+`1.12.5`를 설치합니다. 이미 Terraform CLI를 표준으로 사용한다면 이 구성과
+호환되는 `1.11` 이상 버전을 사용해도 됩니다.
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
-  curl gettext-base openssl openssh-client xorriso
+  curl gettext-base openssl openssh-client python3 xorriso
 ```
 
-OpenTofu는 [공식 Debian 설치 절차](https://opentofu.org/docs/intro/install/deb/)로
-`1.12.5`를 설치합니다. 이미 Terraform CLI를 표준으로 사용한다면 이 구성과
-호환되는 `1.11` 이상 버전을 사용해도 됩니다.
-
-환경 파일을 복사해 실제 호스트·네트워크·External vSwitch 값으로 수정합니다.
+자동 설정 스크립트를 사용하지 않는 경우 환경 파일을 복사해 실제
+호스트·네트워크·External vSwitch 값으로 수정합니다.
 `hyperv.env`는 Git에서 제외되며, source할 때 WinRM 비밀번호를 prompt로 받아
 디스크에 저장하지 않습니다.
 
@@ -155,14 +179,16 @@ Terraform은 manifest와 현재 변수가 모두 일치하지 않으면 ISO 업�
 
 ## 4. VM 설치 단계 적용
 
-비밀값이 없는 Terraform 변수를 복사해 VHDX 경로와 크기를 수정합니다.
+설정 스크립트를 실행했다면 이미 생성된 `terraform.tfvars`를 검토합니다. 수동으로
+설정하는 경우에만 비밀값이 없는 예제를 복사해 VHDX 경로와 크기를 수정합니다.
 VM 이름, MAC, vSwitch는 환경 파일이 `TF_VAR_*`로 함께 전달하므로 ISO 설정과
 Terraform 설정이 어긋나지 않습니다. 무인 설치는 디스크를 초기화하므로
 `install_disk_wipe_confirmation`에는 환경 파일의 `VM_HOSTNAME`과 정확히 같은
 VM 이름을 입력해야 plan이 허용됩니다.
 
 ```bash
-cp terraform.tfvars.example terraform.tfvars
+# 자동 설정 스크립트를 사용하지 않은 경우에만 실행
+test -f terraform.tfvars || cp terraform.tfvars.example terraform.tfvars
 ${EDITOR:-vi} terraform.tfvars
 
 tofu init
