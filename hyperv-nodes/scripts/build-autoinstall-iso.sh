@@ -224,7 +224,9 @@ for grub_configuration in \
   sed -E \
     '/^[[:space:]]*linux[[:space:]]/ { /(^|[[:space:]])autoinstall([[:space:]]|$)/! s/[[:space:]]+---/ autoinstall ---/; }' \
     "${grub_configuration}" >"${grub_configuration}.patched"
-  mv -- "${grub_configuration}.patched" "${grub_configuration}"
+  # Files extracted from the Ubuntu ISO are mode 0444. Force replacement so
+  # an interactive shell cannot stop unattended builds with an mv prompt.
+  mv --force -- "${grub_configuration}.patched" "${grub_configuration}"
   if ! grep -Eq '^[[:space:]]*linux[[:space:]].*[[:space:]]autoinstall([[:space:]]|$)' "${grub_configuration}"; then
     echo "Failed to add the autoinstall kernel argument to ${grub_configuration}" >&2
     exit 1
