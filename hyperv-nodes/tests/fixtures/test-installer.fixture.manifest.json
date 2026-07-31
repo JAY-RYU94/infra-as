@@ -1,0 +1,7 @@
+{
+  "iso_sha256": "9fd0b914b6fde2e2da073e8666aef299b85b119ce139f53deddaf5ac1013ca0e",
+  "schema_version": 1,
+  "vm_address_cidr": "192.0.2.31/24",
+  "vm_hostname": "asol-k3s-01",
+  "vm_mac_address": "00:15:5d:01:02:03"
+}

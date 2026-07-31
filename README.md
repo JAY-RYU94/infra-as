@@ -8,6 +8,8 @@ Pipeline Agent를 배포하는 OpenTofu/Terraform 구성입니다.
 
 | 기능 | 구성요소 | 고정 버전 |
 |---|---|---:|
+| VM OS | Ubuntu Server LTS | `24.04.4` |
+| Hyper-V IaC provider | `windsorcli/hyperv` | `0.3.1` (Registry 게시 최신판) |
 | Kubernetes | k3s | `v1.36.2+k3s1` |
 | 블록 스토리지 | Longhorn | chart `1.12.0` |
 | 오브젝트/S3 | SeaweedFS | chart/app `4.40.0` / `4.40` |
@@ -35,11 +37,16 @@ Pipeline Agent를 배포하는 OpenTofu/Terraform 구성입니다.
 Longhorn·SeaweedFS·OpenBao를 3노드 기준으로 확장합니다. 단일 Hyper-V 호스트의
 다중 VM은 호스트 장애를 견디지 못한다는 점은 변하지 않습니다.
 
-자세한 VM 및 노드 준비 방법은 [Hyper-V 배치 기준](docs/HYPER-V.md), 기존
-SonarQube 연결은 [SonarQube 연동](docs/SONARQUBE.md)을 봅니다.
+VM 생성과 Ubuntu/k3s 자동 설치는
+[`hyperv-nodes`](hyperv-nodes/README.md), 설계 기준은
+[Hyper-V 배치 기준](docs/HYPER-V.md), 기존 SonarQube 연결은
+[SonarQube 연동](docs/SONARQUBE.md)을 봅니다.
 
 ## 사전 준비
 
+- WSL에서 WinRM으로 Hyper-V에 접속해 VM부터 만들려면 먼저
+  [`hyperv-nodes` 배포 절차](hyperv-nodes/README.md)를 실행합니다. Hyper-V VM
+  state와 아래 Kubernetes 플랫폼 state는 분리합니다.
 - Ubuntu 관리 계정은 `asoladmin`이며 초기 비밀번호는 Hyper-V 콘솔에서 처음
   로그인할 때 즉시 변경하도록 강제합니다. 평문 비밀번호는 저장소에 넣지 않습니다.
 - 하나의 VHDX를 사용하되 `/`는 ext4, `/mnt/data`는 XFS(`ftype=1`)인 별도 LVM
@@ -57,14 +64,23 @@ SonarQube 연결은 [SonarQube 연동](docs/SONARQUBE.md)을 봅니다.
 cp terraform.tfvars.example terraform.tfvars
 ```
 
-필수 bootstrap 값은 대상 지정 apply에서도 변수 검증에 필요합니다. 아래 예시
-문자열을 그대로 쓰지 말고 현재 shell에만 실제 무작위 값을 설정합니다.
+필수 bootstrap 값은 대상 지정 apply에서도 변수 검증에 필요합니다. 승인된
+비밀 저장소에서 값을 가져와 prompt에 입력하고 현재 shell에만 export합니다.
 
 ```bash
-export TF_VAR_harbor_admin_password='replace-with-at-least-16-characters'
-export TF_VAR_harbor_secret_key='0123456789ABCDEF'
-export TF_VAR_seaweedfs_s3_access_key='REPLACEACCESSKEY'
-export TF_VAR_seaweedfs_s3_secret_key='replace-with-at-least-32-characters'
+read -rsp 'Harbor admin password: ' secret_value
+printf '\n'
+export TF_VAR_harbor_admin_password="${secret_value}"
+read -rsp 'Harbor 16-byte secret key: ' secret_value
+printf '\n'
+export TF_VAR_harbor_secret_key="${secret_value}"
+read -rsp 'SeaweedFS S3 access key: ' secret_value
+printf '\n'
+export TF_VAR_seaweedfs_s3_access_key="${secret_value}"
+read -rsp 'SeaweedFS S3 secret key: ' secret_value
+printf '\n'
+export TF_VAR_seaweedfs_s3_secret_key="${secret_value}"
+unset secret_value
 
 tofu init
 ```

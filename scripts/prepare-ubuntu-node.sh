@@ -1,15 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ASOLADMIN_PASSWORD_FILE="${ASOLADMIN_PASSWORD_FILE:-/root/asoladmin-initial-password}"
+ASOLADMIN_PASSWORD_FILE="${ASOLADMIN_PASSWORD_FILE:-}"
+EXPIRE_ASOLADMIN_PASSWORD="${EXPIRE_ASOLADMIN_PASSWORD:-false}"
 DATA_MOUNT="/mnt/data"
 K3S_QUOTA_PERCENT="${K3S_QUOTA_PERCENT:-15}"
 LOCAL_PATH_QUOTA_PERCENT="${LOCAL_PATH_QUOTA_PERCENT:-50}"
-LONGHORN_QUOTA_PERCENT="${LONGHORN_QUOTA_PERCENT:-30}"
+LONGHORN_MAX_PERCENT=30
 
-if ! sudo test -r "${ASOLADMIN_PASSWORD_FILE}"; then
-  echo "Initial asoladmin password file is not readable: ${ASOLADMIN_PASSWORD_FILE}" >&2
+if [[ "${EXPIRE_ASOLADMIN_PASSWORD}" != "true" && "${EXPIRE_ASOLADMIN_PASSWORD}" != "false" ]]; then
+  echo "EXPIRE_ASOLADMIN_PASSWORD must be true or false" >&2
   exit 1
+fi
+
+if [[ -n "${ASOLADMIN_PASSWORD_FILE}" ]]; then
+  if ! sudo test -r "${ASOLADMIN_PASSWORD_FILE}"; then
+    echo "Initial asoladmin password file is not readable: ${ASOLADMIN_PASSWORD_FILE}" >&2
+    exit 1
+  fi
 fi
 
 if ! mountpoint -q "${DATA_MOUNT}"; then
@@ -50,8 +58,7 @@ fi
 
 for quota_percent in \
   "${K3S_QUOTA_PERCENT}" \
-  "${LOCAL_PATH_QUOTA_PERCENT}" \
-  "${LONGHORN_QUOTA_PERCENT}"; do
+  "${LOCAL_PATH_QUOTA_PERCENT}"; do
   if [[ ! "${quota_percent}" =~ ^([1-9]|[1-9][0-9])$ ]]; then
     echo "XFS quota percentages must be integers from 1 to 99" >&2
     exit 1
@@ -60,14 +67,13 @@ done
 
 k3s_quota_percent_decimal=$((10#${K3S_QUOTA_PERCENT}))
 local_path_quota_percent_decimal=$((10#${LOCAL_PATH_QUOTA_PERCENT}))
-longhorn_quota_percent_decimal=$((10#${LONGHORN_QUOTA_PERCENT}))
 quota_total_percent=$((
   k3s_quota_percent_decimal +
     local_path_quota_percent_decimal +
-    longhorn_quota_percent_decimal
+    LONGHORN_MAX_PERCENT
 ))
 if ((quota_total_percent > 95)); then
-  echo "XFS project quota percentages must total 95 or less" >&2
+  echo "k3s, local-path, and Longhorn capacity percentages must total 95 or less" >&2
   exit 1
 fi
 
@@ -93,14 +99,20 @@ else
   sudo usermod --append --groups sudo,k3s-admin asoladmin
 fi
 
-initial_password="$(sudo cat -- "${ASOLADMIN_PASSWORD_FILE}")"
-if [[ -z "${initial_password}" ]]; then
-  echo "Initial asoladmin password must not be empty" >&2
-  exit 1
+if [[ -n "${ASOLADMIN_PASSWORD_FILE}" ]]; then
+  initial_password="$(sudo cat -- "${ASOLADMIN_PASSWORD_FILE}")"
+  if [[ -z "${initial_password}" ]]; then
+    echo "Initial asoladmin password must not be empty" >&2
+    exit 1
+  fi
+
+  printf 'asoladmin:%s\n' "${initial_password}" | sudo chpasswd
+  unset initial_password
 fi
 
-printf 'asoladmin:%s\n' "${initial_password}" | sudo chpasswd
-unset initial_password
+if [[ -n "${ASOLADMIN_PASSWORD_FILE}" || "${EXPIRE_ASOLADMIN_PASSWORD}" == "true" ]]; then
+  sudo chage --lastday 0 asoladmin
+fi
 
 sudo apt-get update
 sudo apt-get install -y \
@@ -130,7 +142,17 @@ data_size_kib="$(
 )"
 k3s_quota_kib=$((data_size_kib * k3s_quota_percent_decimal / 100))
 local_path_quota_kib=$((data_size_kib * local_path_quota_percent_decimal / 100))
-longhorn_quota_kib=$((data_size_kib * longhorn_quota_percent_decimal / 100))
+k3s_used_kib="$(sudo du --block-size=1K --summarize "${DATA_MOUNT}/k3s" | awk '{print $1}')"
+local_path_used_kib="$(sudo du --block-size=1K --summarize "${DATA_MOUNT}/local-path" | awk '{print $1}')"
+
+if ((k3s_quota_kib <= k3s_used_kib)); then
+  echo "Requested k3s quota is not larger than its current ${k3s_used_kib} KiB usage" >&2
+  exit 1
+fi
+if ((local_path_quota_kib <= local_path_used_kib)); then
+  echo "Requested local-path quota is not larger than its current ${local_path_used_kib} KiB usage" >&2
+  exit 1
+fi
 
 sudo xfs_quota -x \
   -c "project -s -p ${DATA_MOUNT}/k3s 11001" \
@@ -140,13 +162,6 @@ sudo xfs_quota -x \
   -c "project -s -p ${DATA_MOUNT}/local-path 11002" \
   -c "limit -p bhard=${local_path_quota_kib}k 11002" \
   "${DATA_MOUNT}"
-sudo xfs_quota -x \
-  -c "project -s -p ${DATA_MOUNT}/longhorn 11003" \
-  -c "limit -p bhard=${longhorn_quota_kib}k 11003" \
-  "${DATA_MOUNT}"
-
-sudo chage --lastday 0 asoladmin
-
 cat <<'MESSAGE'
 Node prerequisites are installed.
 
@@ -163,8 +178,8 @@ separate partitions or LVM logical volumes. See docs/HYPER-V.md.
 MESSAGE
 
 printf \
-  'XFS project quota hard limits: k3s=%s%%, local-path=%s%%, Longhorn=%s%%; unallocated headroom=%s%%.\n' \
+  'Capacity limits: XFS k3s=%s%%, XFS local-path=%s%%, Longhorn scheduler=%s%%; unallocated headroom=%s%%.\n' \
   "${K3S_QUOTA_PERCENT}" \
   "${LOCAL_PATH_QUOTA_PERCENT}" \
-  "${LONGHORN_QUOTA_PERCENT}" \
+  "${LONGHORN_MAX_PERCENT}" \
   "$((100 - quota_total_percent))"

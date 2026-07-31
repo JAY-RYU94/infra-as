@@ -24,12 +24,13 @@ resource "helm_release" "longhorn" {
       }
 
       defaultSettings = {
-        defaultDataPath                   = "/mnt/data/longhorn"
-        defaultReplicaCount               = tostring(local.longhorn_replica_count)
-        replicaAutoBalance                = local.is_ha ? "best-effort" : "disabled"
-        storageOverProvisioningPercentage = "100"
-        storageMinimalAvailablePercentage = "15"
-        upgradeChecker                    = false
+        defaultDataPath                         = "/mnt/data/longhorn"
+        defaultReplicaCount                     = tostring(local.longhorn_replica_count)
+        replicaAutoBalance                      = local.is_ha ? "best-effort" : "disabled"
+        storageOverProvisioningPercentage       = "100"
+        storageMinimalAvailablePercentage       = "5"
+        storageReservedPercentageForDefaultDisk = "70"
+        upgradeChecker                          = false
       }
 
       longhornUI = {

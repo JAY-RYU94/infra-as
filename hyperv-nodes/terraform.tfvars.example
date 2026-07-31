@@ -1,0 +1,14 @@
+installation_phase             = "install"
+installer_iso_present          = true
+installer_cleanup_confirmation = ""
+install_disk_wipe_confirmation = ""
+
+install_iso_host_path  = "C:/Hyper-V/ASOL/ISO/asol-k3s-ubuntu-24.04.4-autoinstall.iso"
+
+vhd_path        = "C:/Hyper-V/ASOL/VHDX/asol-k3s-01.vhdx"
+vhd_size_gib    = 1024
+processor_count = 8
+memory_gib      = 32
+
+# vm_name, vm_mac_address, vm_address_cidr, and virtual_switch_name are
+# supplied by hyperv.env as TF_VAR_* values so the ISO and VM cannot drift.
